@@ -8,20 +8,19 @@ import com.sun.net.httpserver.HttpExchange;
 import dev.seedmap.oracle.http.ApiError;
 import dev.seedmap.oracle.http.HttpJson;
 import dev.seedmap.oracle.world.Dimensions;
+import dev.seedmap.oracle.world.PlacementScan;
 import dev.seedmap.oracle.world.ServerTasks;
 import net.minecraft.registry.DynamicRegistryManager;
 import net.minecraft.registry.Registry;
 import net.minecraft.registry.RegistryKeys;
 import net.minecraft.registry.entry.RegistryEntry;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.structure.StructureSet;
 import net.minecraft.util.Identifier;
-import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
-import net.minecraft.world.biome.Biome;
 import net.minecraft.world.biome.source.util.MultiNoiseUtil;
 import net.minecraft.world.gen.chunk.ChunkGeneratorSettings;
 import net.minecraft.world.gen.chunk.NoiseChunkGenerator;
-import net.minecraft.world.gen.chunk.placement.StructurePlacement;
 import net.minecraft.world.gen.chunk.placement.StructurePlacementCalculator;
 import net.minecraft.world.gen.noise.NoiseConfig;
 import net.minecraft.world.gen.structure.Structure;
@@ -42,9 +41,11 @@ import java.util.Optional;
  *
  * Structure observations: a candidate-seeded StructurePlacementCalculator is created via
  * ChunkGenerator#createStructurePlacementCalculator (fully seed-parameterizable; nothing is
- * bound to the live seed). match = the game's shouldGenerate marks the observation's chunk
- * as a start chunk AND the structure's valid-biome list contains the candidate-seed sampler
- * biome at the chunk anchor (biome_ok-level verification; start computation is not run here).
+ * bound to the live seed). Game-accurate per the contract: match = the vanilla per-start-chunk
+ * outcome for the observation's chunk names the expected type — the game's shouldGenerate
+ * marks the chunk as a start chunk, the vanilla weighted elimination draw for multi-entry
+ * structure sets (PlacementScan#weightedWinner) picks the expected structure, and its real
+ * StructureStart computes with the candidate-seeded noise/placement.
  *
  * Bedrock observations are v1.5 (throwaway-world generation): reported per-detail as
  * {"match": null, "unsupported": true} and excluded from matches/total.
@@ -52,10 +53,10 @@ import java.util.Optional;
 public final class SeedVerifyEndpoint {
     private static final int MAX_CANDIDATES = 16;
     private static final int MAX_OBSERVATIONS = 256;
-    private static final int BIOME_SAMPLE_Y = 64;
 
     private record CandidateContext(
             Dimensions.Context live,
+            NoiseConfig noiseConfig,
             MultiNoiseUtil.MultiNoiseSampler sampler,
             StructurePlacementCalculator calculator
     ) {
@@ -194,9 +195,15 @@ public final class SeedVerifyEndpoint {
                 settings, registryManager.getWrapperOrThrow(RegistryKeys.NOISE_PARAMETERS), seed);
         StructurePlacementCalculator calculator = live.generator().createStructurePlacementCalculator(
                 registryManager.getWrapperOrThrow(RegistryKeys.STRUCTURE_SET), noiseConfig, seed);
-        return new CandidateContext(live, noiseConfig.getMultiNoiseSampler(), calculator);
+        return new CandidateContext(live, noiseConfig, noiseConfig.getMultiNoiseSampler(), calculator);
     }
 
+    /**
+     * Game-accurate: would the game, generating with the candidate seed, place a structure of
+     * the expected type in this chunk? Mirrors ChunkGenerator#setStructureStarts per structure
+     * set — shouldGenerate gate, then the vanilla weighted elimination draw whose winner must
+     * be the expected structure with a computable start.
+     */
     private boolean structurePlaced(CandidateContext ctx, String structureId, int chunkX, int chunkZ) {
         Registry<Structure> registry = server.getRegistryManager().get(RegistryKeys.STRUCTURE);
         Identifier id = Identifier.tryParse(structureId);
@@ -205,18 +212,49 @@ public final class SeedVerifyEndpoint {
         if (entry.isEmpty()) {
             throw ApiError.unknownStructure(structureId);
         }
-        for (StructurePlacement placement : ctx.calculator().getPlacements(entry.get())) {
-            if (!placement.shouldGenerate(ctx.calculator(), chunkX, chunkZ)) {
+        Structure expected = entry.get().value();
+        // Cheap exact short-circuit (vanilla's hasValidBiome pattern): a structure with no
+        // valid biome anywhere in this dimension can never compute a start.
+        if (expected.getValidBiomes().stream()
+                .noneMatch(ctx.live().biomeSource().getBiomes()::contains)) {
+            return false;
+        }
+        ChunkPos chunkPos = new ChunkPos(chunkX, chunkZ);
+        for (RegistryEntry<StructureSet> setEntry : ctx.calculator().getStructureSets()) {
+            StructureSet set = setEntry.value();
+            if (set.structures().stream().noneMatch(weighted -> weighted.structure().value() == expected)) {
                 continue;
             }
-            BlockPos anchor = placement.getLocatePos(new ChunkPos(chunkX, chunkZ));
-            RegistryEntry<Biome> biome = ctx.live().biomeSource().getBiome(
-                    anchor.getX() >> 2, BIOME_SAMPLE_Y >> 2, anchor.getZ() >> 2, ctx.sampler());
-            if (entry.get().value().getValidBiomes().contains(biome)) {
+            if (!set.placement().shouldGenerate(ctx.calculator(), chunkX, chunkZ)) {
+                continue;
+            }
+            StructureSet.WeightedEntry winner = PlacementScan.weightedWinner(
+                    set, ctx.calculator().getStructureSeed(), chunkPos,
+                    weighted -> computesCandidateStart(ctx, weighted.structure().value(), chunkPos));
+            if (winner != null && winner.structure().value() == expected) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * Candidate-seeded equivalent of ChunkGenerator#trySetStructureStart: the same registries,
+     * generator and template manager as the live world, but the candidate NoiseConfig and the
+     * candidate calculator's structure seed (references=0 for an ungenerated chunk).
+     */
+    private boolean computesCandidateStart(CandidateContext ctx, Structure structure, ChunkPos chunkPos) {
+        return structure.createStructureStart(
+                server.getRegistryManager(),
+                ctx.live().generator(),
+                ctx.live().biomeSource(),
+                ctx.noiseConfig(),
+                server.getStructureTemplateManager(),
+                ctx.calculator().getStructureSeed(),
+                chunkPos,
+                0,
+                ctx.live().world(),
+                structure.getValidBiomes()::contains).hasChildren();
     }
 
     private static JsonArray requireArray(JsonObject body, String name) {

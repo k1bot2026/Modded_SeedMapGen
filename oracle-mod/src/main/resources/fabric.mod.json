@@ -3,7 +3,7 @@
   "id": "seedmap-oracle",
   "version": "${version}",
   "name": "Seedmap Oracle",
-  "description": "Read-only worldgen oracle: a localhost-only HTTP server answering biome and structure queries straight from the live chunk generator. Never loads or generates chunks in persistent worlds.",
+  "description": "Read-only worldgen oracle: a localhost-only HTTP server answering biome and structure queries straight from the live chunk generator. Read-only toward everything except its throwaway world (world-oracle): /locate may compute structure starts there; the only other disk writes are cached tiles.",
   "authors": [
     "Modpack Seedmap"
   ],

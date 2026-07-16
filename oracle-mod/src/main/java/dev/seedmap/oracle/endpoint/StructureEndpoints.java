@@ -38,19 +38,21 @@ import java.util.Set;
  * Verification levels:
  * - grid: real placement candidate (game's shouldGenerate);
  * - biome_ok: the structure's valid-biome list contains the sampler biome at the candidate
- *   anchor. Sampled at y=64 (documented v1 approximation: the game checks the biome at the
- *   structure's own generation position/height, which is only known after start computation);
- * - start_ok: a real StructureStart was computed via Structure#createStructureStart with the
- *   calculator's structure seed (the exact vanilla path) and has children.
- *
- * v1 semantics for multi-structure sets: every structure in the set whose checks pass at a
- * candidate chunk is reported. Vanilla places at most one per start chunk via a weighted
- * carver-seeded draw; start_ok narrows the list to game-computable starts but does not
- * replicate the weighted pick.
+ *   anchor for at least one of the contract's quart-Y probes (block Y -48, 0, 64 — covers
+ *   deep/cave/surface structures such as minecraft:ancient_city). A fast prefilter: the
+ *   game evaluates the biome at the structure's own generation position/height, which is
+ *   only known after start computation — start_ok is the game-accurate check;
+ * - start_ok: the vanilla per-start-chunk outcome. Multi-entry sets replicate the vanilla
+ *   weighted elimination draw (carver-seeded ChunkRandom over the set's weighted entries,
+ *   see PlacementScan#weightedWinner) and only the winning entry — a real StructureStart
+ *   computed via Structure#createStructureStart with children — is reported; at grid and
+ *   biome_ok every passing entry of a set is listed.
  */
 public final class StructureEndpoints {
-    /** The biome-check sampling height for biome_ok (see class javadoc). */
-    private static final int BIOME_SAMPLE_Y = 64;
+    /** The biome_ok probe heights in block Y (contract: pass if ANY probe matches). */
+    private static final int[] BIOME_PROBE_BLOCK_YS = {-48, 0, 64};
+    /** The /locate center height (arbitrary; locateStructure only uses the horizontal pos). */
+    private static final int LOCATE_CENTER_Y = 64;
     /** Vanilla /locate search radius in chunks (LocateCommand.LOCATE_STRUCTURE_RADIUS). */
     private static final int LOCATE_RADIUS_CHUNKS = 100;
 
@@ -174,6 +176,11 @@ public final class StructureEndpoints {
                         relevant.add(weighted);
                     }
                 }
+                if (level == Level.BIOME_OK) {
+                    // Cheap short-circuit: a structure whose valid-biome list shares nothing
+                    // with the dimension's biome source can never pass a probe.
+                    relevant.removeIf(weighted -> !canOccurInDimension(ctx, weighted.structure().value()));
+                }
                 if (relevant.isEmpty()) {
                     continue;
                 }
@@ -183,27 +190,26 @@ public final class StructureEndpoints {
                 String setId = setEntry.getIdAsString();
                 for (ChunkPos chunkPos : candidates) {
                     BlockPos anchor = placement.getLocatePos(chunkPos);
-                    RegistryEntry<Biome> anchorBiome = level != Level.BIOME_OK ? null
-                            : ctx.biomeSource().getBiome(
-                                    anchor.getX() >> 2, BIOME_SAMPLE_Y >> 2, anchor.getZ() >> 2, ctx.sampler());
+                    if (level == Level.START_OK) {
+                        // Vanilla places at most one structure of a set per start chunk;
+                        // the draw runs over the full set, the types filter only gates output.
+                        StructureSet.WeightedEntry winner = PlacementScan.weightedWinner(
+                                set, ctx.calculator().getStructureSeed(), chunkPos,
+                                weighted -> computesRealStart(ctx, weighted.structure().value(), chunkPos));
+                        if (winner != null
+                                && (types == null || types.contains(winner.structure().getIdAsString()))) {
+                            out.add(feature(winner, setId, anchor, chunkPos, level));
+                        }
+                        continue;
+                    }
+                    List<RegistryEntry<Biome>> probes =
+                            level == Level.BIOME_OK ? probeBiomes(ctx, anchor) : null;
                     for (StructureSet.WeightedEntry weighted : relevant) {
-                        Structure structure = weighted.structure().value();
                         if (level == Level.BIOME_OK
-                                && !structure.getValidBiomes().contains(anchorBiome)) {
+                                && !anyProbeValid(weighted.structure().value(), probes)) {
                             continue;
                         }
-                        if (level == Level.START_OK && !computesRealStart(ctx, structure, chunkPos)) {
-                            continue;
-                        }
-                        JsonObject feature = new JsonObject();
-                        feature.addProperty("id", weighted.structure().getIdAsString());
-                        feature.addProperty("structureSet", setId);
-                        feature.addProperty("x", anchor.getX());
-                        feature.addProperty("z", anchor.getZ());
-                        feature.addProperty("chunkX", chunkPos.x);
-                        feature.addProperty("chunkZ", chunkPos.z);
-                        feature.addProperty("level", level.name);
-                        out.add(feature);
+                        out.add(feature(weighted, setId, anchor, chunkPos, level));
                     }
                 }
             }
@@ -214,6 +220,48 @@ public final class StructureEndpoints {
         body.addProperty("dim", dim);
         body.add("features", features);
         HttpJson.sendJson(exchange, 200, body);
+    }
+
+    private static JsonObject feature(StructureSet.WeightedEntry entry, String setId,
+                                      BlockPos anchor, ChunkPos chunkPos, Level level) {
+        JsonObject feature = new JsonObject();
+        feature.addProperty("id", entry.structure().getIdAsString());
+        feature.addProperty("structureSet", setId);
+        feature.addProperty("x", anchor.getX());
+        feature.addProperty("z", anchor.getZ());
+        feature.addProperty("chunkX", chunkPos.x);
+        feature.addProperty("chunkZ", chunkPos.z);
+        feature.addProperty("level", level.name);
+        return feature;
+    }
+
+    /** Sampler biomes at the anchor, one per contract probe height (block Y -48, 0, 64). */
+    private static List<RegistryEntry<Biome>> probeBiomes(Dimensions.Context ctx, BlockPos anchor) {
+        List<RegistryEntry<Biome>> biomes = new ArrayList<>(BIOME_PROBE_BLOCK_YS.length);
+        for (int blockY : BIOME_PROBE_BLOCK_YS) {
+            biomes.add(ctx.biomeSource().getBiome(
+                    anchor.getX() >> 2, blockY >> 2, anchor.getZ() >> 2, ctx.sampler()));
+        }
+        return biomes;
+    }
+
+    private static boolean anyProbeValid(Structure structure, List<RegistryEntry<Biome>> probes) {
+        RegistryEntryList<Biome> validBiomes = structure.getValidBiomes();
+        for (RegistryEntry<Biome> biome : probes) {
+            if (validBiomes.contains(biome)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Vanilla's own dimension prefilter pattern (StructurePlacementCalculator#hasValidBiome):
+     * a structure can only ever place where its valid-biome list intersects the biome
+     * source's possible biomes.
+     */
+    private static boolean canOccurInDimension(Dimensions.Context ctx, Structure structure) {
+        return structure.getValidBiomes().stream().anyMatch(ctx.biomeSource().getBiomes()::contains);
     }
 
     /**
@@ -250,9 +298,11 @@ public final class StructureEndpoints {
             Dimensions.Context ctx = dimensions.get(server, dim);
             Registry<Structure> registry = server.getRegistryManager().get(RegistryKeys.STRUCTURE);
             RegistryEntryList<Structure> targets = resolveTargets(registry, structureParam);
-            BlockPos center = new BlockPos(x, BIOME_SAMPLE_Y, z);
+            BlockPos center = new BlockPos(x, LOCATE_CENTER_Y, z);
             // Same code path as the vanilla /locate command: radius 100 chunks, not skipping
-            // referenced structures.
+            // referenced structures. By-design side effect (see the contract's read-only
+            // guarantee): the vanilla path may compute structure starts and persist
+            // STRUCTURE_STARTS-stage proto-chunks in the throwaway world.
             Pair<BlockPos, RegistryEntry<Structure>> result = ctx.generator().locateStructure(
                     ctx.world(), targets, center, LOCATE_RADIUS_CHUNKS, false);
             if (result == null) {

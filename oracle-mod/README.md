@@ -3,8 +3,10 @@
 The Fabric server-side mod that **is** the oracle: it embeds a localhost-only HTTP server
 answering read-only worldgen queries (biomes, structures, locate, seed verification)
 straight from the live `ChunkGenerator` / `BiomeSource` / structure-placement code of the
-running server. It never reimplements worldgen and never loads or generates chunks in any
-persistent world.
+running server. It never reimplements worldgen and is read-only toward everything except
+the throwaway world it runs against (`level-name=world-oracle`): `/locate` may compute
+structure starts there (see the contract's read-only guarantee), and tiles are cached to
+disk. Production worlds are never touched.
 
 The HTTP API is specified in [`../docs/oracle-api.md`](../docs/oracle-api.md) — that
 document is the contract; this README only covers building, configuring, and the v1
@@ -71,26 +73,34 @@ shapes exactly per the contract.
   `StructurePlacement#shouldGenerate`. Unknown (modded) placement types fall back to an
   exhaustive `shouldGenerate` scan capped at 512×512 chunks. Candidate bboxes are capped at
   2048×2048 chunks (the contract caps `/structures/placed` at 512×512 chunks).
-- **biome_ok** samples the biome at the candidate's locate anchor at **y=64** and tests the
-  structure's valid-biome list. This is a documented v1 approximation: the game evaluates
-  the biome at the structure's own generation position/height, which is only known after
-  start computation. `start_ok` is the game-accurate check: a real
+- **biome_ok** samples the biome at the candidate's locate anchor at the contract's three
+  quart-Y probes (block Y **−48, 0, 64** — covering deep/cave/surface structures such as
+  `minecraft:ancient_city`) and passes if the structure's valid-biome list contains ANY
+  probe biome. This is contract-documented behavior but still an approximation of the
+  per-structure generation height: the game evaluates the biome at the structure's own
+  generation position/height, which is only known after start computation. A cheap exact
+  short-circuit drops structures whose valid-biome list shares nothing with the dimension's
+  `BiomeSource#getBiomes()`. `start_ok` is the game-accurate check: a real
   `Structure#createStructureStart` (same registries, noise config, template manager, the
   calculator's structure seed, references=0) must produce a start with children — this is
   bit-for-bit the vanilla `trySetStructureStart` path and is costly; request it only at
   high zoom / on demand.
-- **Multi-structure sets**: every structure of a set whose checks pass at a candidate chunk
-  is reported. Vanilla places at most one structure per start chunk (weighted,
-  carver-seeded draw with biome/start retry); replicating the draw is planned once the
-  validation harness can measure the discrepancy. In practice weighted entries of vanilla
-  sets have disjoint biome predicates, so `start_ok` rarely over-reports.
+- **Multi-structure sets**: at `grid`/`biome_ok`, every structure of a set whose checks pass
+  at a candidate chunk is reported (contract behavior — those levels are prefilters). At
+  `start_ok` the vanilla per-start-chunk draw is replicated exactly
+  (`PlacementScan#weightedWinner`, transcribed from the decompiled
+  `ChunkGenerator#setStructureStarts`): single-entry sets skip the draw; multi-entry sets
+  seed a `ChunkRandom` via `setCarverSeed(structureSeed, chunkX, chunkZ)` and run weighted
+  elimination — pick a weighted random entry, keep it if its start computes, otherwise
+  remove it and redraw. Only the winner is reported.
 - **/locate** delegates to `ChunkGenerator#locateStructure` with the vanilla `/locate`
-  parameters (radius 100 chunks, `skipReferencedStructures=false`).
+  parameters (radius 100 chunks, `skipReferencedStructures=false`). By-design side effect
+  (documented in the contract's read-only guarantee): the vanilla path may compute
+  structure starts and persist STRUCTURE_STARTS-stage proto-chunks in the throwaway world.
 - **Tiles** are 256×256 PNGs rendered from the same sampler (zoom scheme per contract),
-  cached under `<cacheDir>/<fingerprint>/<seed>/tiles/<dim>/<y>/<z>/<tx>/<tz>.png`. `':'`
-  is replaced with `'_'` in the dimension **and** fingerprint path components (the
-  contract specifies the dimension; the fingerprint contains `sha256:` and `':'` is not
-  legal in Windows paths). Cached tiles are immutable
+  cached under `<cacheDir>/<fingerprint>/<seed>/tiles/<dim>/<y>/<z>/<tx>/<tz>.png`. Per the
+  contract, `':'` is replaced with `'_'` in **both** the fingerprint and dimension path
+  components (Windows forbids `':'` in path segments). Cached tiles are immutable
   (`Cache-Control: public, max-age=31536000, immutable`).
 - **Palette**: per-biome color at runtime — `BiomeEffects` grass color if defined, else
   foliage color, else water color, else a stable FNV-1a hash of the biome id mapped to HSL
@@ -101,13 +111,18 @@ shapes exactly per the contract.
   state: a fresh `NoiseConfig` (built exactly like vanilla builds the live one) provides
   the candidate sampler for biome observations, and a candidate-seeded
   `StructurePlacementCalculator` (via `ChunkGenerator#createStructurePlacementCalculator`)
-  answers structure observations. A structure observation matches when the game's
-  `shouldGenerate` marks the observation's chunk as a start chunk **and** the valid-biome
-  check passes with the candidate sampler (biome_ok-level; start computation is not run
-  during verification). Bedrock observations return `{"match": null, "unsupported": true}`
-  and are excluded from `matches`/`total` (v1.5).
-- **Read-only guarantee**: no endpoint loads or generates chunks in any persistent world;
-  the only disk writes are tiles under `cacheDir`.
+  answers structure observations. A structure observation matches when the game, generating
+  with the candidate seed, would place a structure of the expected type in the observation's
+  chunk — game-accurate: the game's `shouldGenerate` marks the chunk as a start chunk, the
+  vanilla weighted elimination draw picks the expected structure (multi-entry sets), and a
+  real candidate-seeded `StructureStart` computes with children. An exact short-circuit
+  skips structures with no valid biome in the dimension. Bedrock observations return
+  `{"match": null, "unsupported": true}` and are excluded from `matches`/`total` (v1.5).
+- **Read-only guarantee**: per the contract, no endpoint loads or generates chunks in, or
+  writes to, any world other than the throwaway `world-oracle` world. `/locate` may compute
+  structure starts and persist STRUCTURE_STARTS-stage proto-chunks **in that throwaway
+  world** (by design — the vanilla code path is the validation ground truth); the only
+  other disk writes are tiles under `cacheDir`.
 
 ## Verification
 

@@ -11,6 +11,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.math.BigDecimal;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
@@ -77,10 +78,20 @@ public final class HttpJson {
         if (el == null || !el.isJsonPrimitive()) {
             throw ApiError.badParam("missing required field: " + name);
         }
+        BigDecimal value;
         try {
-            return el.getAsInt();
+            value = el.getAsBigDecimal();
         } catch (RuntimeException e) {
             throw ApiError.badParam("field " + name + " is not an integer");
+        }
+        try {
+            // Rejects both non-integral values (64.9 must not truncate to 64) and values
+            // outside the int range; the contract has no float-typed int field.
+            return value.intValueExact();
+        } catch (ArithmeticException e) {
+            // Do not echo the value: toPlainString() can OOM on extreme exponents
+            // (e.g. 1e2147483647) and huge literals would be reflected back verbatim.
+            throw ApiError.badParam("field " + name + " must be an integer in int range");
         }
     }
 

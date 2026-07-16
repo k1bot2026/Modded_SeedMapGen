@@ -116,6 +116,14 @@ BlockPos, int, boolean)` → `@Nullable Pair<BlockPos, RegistryEntry<Structure>>
 backend; generics from [src] `ChunkGenerator.java`); `createStructurePlacementCalculator(
 RegistryWrapper<StructureSet>, NoiseConfig, long)` (the /seed/verify candidate calculator).
 
+Behavior note (NOT chunk-free): `locateStructure` walks placements via
+`StructureLocator`-backed presence checks that may compute structure starts and persist
+STRUCTURE_STARTS-stage proto-chunks in the world it is given. The oracle only ever passes
+the throwaway `world-oracle` worlds, and the API contract documents this /locate side
+effect as by-design (validation ground truth = the vanilla code path). Every other oracle
+query path (sampler biomes, placement calculator, `createStructureStart`) stays
+chunk-load-free.
+
 Vanilla start-seed evidence — [src] `ChunkGenerator.java` `setStructureStarts` passes
 `placementCalculator.getStructureSeed()` (not the raw world seed) into
 `trySetStructureStart`, which calls `structure.createStructureStart(dynamicRegistryManager,
@@ -178,12 +186,24 @@ and `getMultiNoiseSampler()`.
 CLASS net/minecraft/class_6780 net/minecraft/world/biome/source/BiomeSupplier
 	METHOD method_38109 getBiome (IIILnet/minecraft/class_6544$class_6552;)Lnet/minecraft/class_6880;
 		ARG 1 x  ARG 2 y  ARG 3 z  ARG 4 noise
+
+CLASS net/minecraft/class_1966 net/minecraft/world/biome/source/BiomeSource
+	METHOD method_28443 getBiomes ()Ljava/util/Set;
 ```
 
 Used: `biomeSource.getBiome(int, int, int, MultiNoiseUtil.MultiNoiseSampler)` →
 `RegistryEntry<Biome>`. Declared on the BiomeSupplier interface which BiomeSource
 implements; the override keeps name and intermediary id. Coordinates are quart coordinates
 (block >> 2) — source-level convention, applied everywhere in this mod.
+
+Also used: `getBiomes()` → `Set<RegistryEntry<Biome>>` (the dimension biome short-circuit
+in StructureEndpoints/SeedVerifyEndpoint). Generics from [src]
+`StructurePlacementCalculator.java`: `Set<RegistryEntry<Biome>> set =
+this.biomeSource.getBiomes();` plus the vanilla prefilter pattern this mod mirrors
+(`hasValidBiome`): `return stream.anyMatch(biomeSource.getBiomes()::contains);`. Usage
+proof compiled against yarn 1.21.1 — [fabric] `BiomeSelectionContextImpl.java`:
+`dimension.chunkGenerator().getBiomeSource().getBiomes().stream().anyMatch(entry ->
+entry.value() == biome)`.
 
 ### net.minecraft.world.biome.source.util.MultiNoiseUtil.MultiNoiseSampler (class_6544$class_6552)
 [yarn] `MultiNoiseUtil.mapping`: `CLASS class_6552 MultiNoiseSampler`. Used as a type only
@@ -252,11 +272,13 @@ Used as an `instanceof` target and as the argument of `getPlacementPositions` on
 METHOD	ejx	()Ljava/util/List;	a	comp_510          → structures()
 METHOD	ejx	()Leko;	b	comp_511                      → placement()   (eko = class_6874)
 METHOD	ejx$a	()Ljm;	a	comp_512                      → WeightedEntry.structure()  (jm = class_6880)
+METHOD	ejx$a	()I	b	comp_513                      → WeightedEntry.weight()
 ```
 
 and [src]: `public record StructureSet(List<StructureSet.WeightedEntry> structures,
 StructurePlacement placement)` with `record WeightedEntry(RegistryEntry<Structure> structure,
-int weight)`. Used: `structures()`, `placement()`, `WeightedEntry.structure()`.
+int weight)`. Used: `structures()`, `placement()`, `WeightedEntry.structure()`,
+`WeightedEntry.weight()` (the start_ok weighted elimination draw).
 
 ### net.minecraft.world.gen.structure.Structure (class_3195)
 [yarn] `world/gen/structure/Structure.mapping`:
@@ -287,6 +309,55 @@ Used: `hasChildren()` — the validity check (vanilla gates on exactly this, [sr
 [yarn] header `CLASS net/minecraft/class_3485 net/minecraft/structure/StructureTemplateManager`.
 Used as a type only (parameter of createStructureStart, from
 `MinecraftServer#getStructureTemplateManager`).
+
+### Vanilla multi-entry weighted draw — decompiled `ChunkGenerator#setStructureStarts`
+[src] `net/minecraft/world/gen/chunk/ChunkGenerator.java` (yarn-decompiled 1.21.1 mirror,
+fetched 2026-07-16), verbatim from the method body — `PlacementScan#weightedWinner`
+transcribes exactly this:
+
+```java
+if (structurePlacement.shouldGenerate(placementCalculator, chunkPos.x, chunkPos.z)) {
+    if (list.size() == 1) {
+        this.trySetStructureStart((StructureSet.WeightedEntry)list.get(0), ...);
+    } else {
+        ArrayList<StructureSet.WeightedEntry> arrayList = new ArrayList(list.size());
+        arrayList.addAll(list);
+        ChunkRandom chunkRandom = new ChunkRandom(new CheckedRandom(0L));
+        chunkRandom.setCarverSeed(placementCalculator.getStructureSeed(), chunkPos.x, chunkPos.z);
+        int i = 0;
+        for (StructureSet.WeightedEntry weightedEntry2 : arrayList) {
+            i += weightedEntry2.weight();
+        }
+        while (!arrayList.isEmpty()) {
+            int j = chunkRandom.nextInt(i);
+            int k = 0;
+            for (StructureSet.WeightedEntry weightedEntry3 : arrayList) {
+                j -= weightedEntry3.weight();
+                if (j < 0) {
+                    break;
+                }
+                k++;
+            }
+            StructureSet.WeightedEntry weightedEntry4 = (StructureSet.WeightedEntry)arrayList.get(k);
+            if (this.trySetStructureStart(weightedEntry4, ..., placementCalculator.getStructureSeed(),
+                    chunk, chunkPos, chunkSectionPos)) {
+                return;
+            }
+            arrayList.remove(k);
+            i -= weightedEntry4.weight();
+        }
+    }
+}
+```
+
+Success in `trySetStructureStart` = `structure.createStructureStart(dynamicRegistryManager,
+this, this.biomeSource, noiseConfig, structureManager, seed, pos, i, chunk, predicate)`
+returning a start with `hasChildren()` (same method, directly below in the decompiled file;
+`i` = existing references, 0 for an ungenerated chunk; `predicate =
+registryEntryList::contains` over `structure.getValidBiomes()`). The single-entry
+`list.size() == 1` bypass and the elimination loop (winner stops the set; failures are
+removed and redrawn) are mirrored 1:1 by `PlacementScan#weightedWinner`, used by both
+/structures/placed level=start_ok and /seed/verify structure observations.
 
 ---
 
@@ -378,13 +449,18 @@ Used: `value()`, `getIdAsString()`, `Reference.registryKey()`.
 
 ```
 METHOD method_40241 contains (Lnet/minecraft/class_6880;)Z
+METHOD method_40239 stream ()Ljava/util/stream/Stream;
+	COMMENT {@return a stream of registry entries in this list}
 METHOD method_40246 of ([Lnet/minecraft/class_6880;)Lnet/minecraft/class_6885$class_6886;
 CLASS class_6888 Named
 ```
 
-Used: `contains(RegistryEntry<T>)` (biome predicate), static varargs `of(...)` →
-`RegistryEntryList.Direct<T>` (single-structure /locate), `Named<T>` as a subtype of
-`RegistryEntryList<T>` (tag /locate).
+Used: `contains(RegistryEntry<T>)` (biome predicate), `stream()` →
+`Stream<RegistryEntry<T>>` (the valid-biomes/dimension-biomes intersection short-circuit;
+generic + call-site pattern from [src] `StructurePlacementCalculator.java` `hasValidBiome`:
+`structure2.getValidBiomes().stream()` ... `.anyMatch(biomeSource.getBiomes()::contains)`),
+static varargs `of(...)` → `RegistryEntryList.Direct<T>` (single-structure /locate),
+`Named<T>` as a subtype of `RegistryEntryList<T>` (tag /locate).
 
 ### net.minecraft.registry.tag.TagKey (class_6862)
 [yarn] `registry/tag/TagKey.mapping`:
@@ -471,6 +547,58 @@ Used: public fields `x`/`z` ([src] usage `chunkPos.x`), `new ChunkPos(int, int)`
 [yarn] header `CLASS net/minecraft/class_5539 net/minecraft/world/HeightLimitView`. Used as
 a parameter type only; a `ServerWorld` is passed (hierarchy evidence in section 1).
 
+### net.minecraft.util.math.random.ChunkRandom (class_2919)
+[yarn] `net/minecraft/util/math/random/ChunkRandom.mapping` (fetched 2026-07-16):
+
+```
+CLASS net/minecraft/class_2919 net/minecraft/util/math/random/ChunkRandom
+	METHOD <init> (Lnet/minecraft/class_5819;)V
+		ARG 1 baseRandom
+	METHOD method_12663 setCarverSeed (JII)V
+		COMMENT Seeds the randomizer to generate larger features such as caves, ravines, mineshafts
+		COMMENT and strongholds. It is also used to initiate structure start behavior such as rotation.
+		ARG 1 worldSeed
+		ARG 3 chunkX
+		ARG 4 chunkZ
+```
+
+Used: `new ChunkRandom(Random)` and `setCarverSeed(long, int, int)` → `void` (the start_ok
+weighted draw seed, exactly as decompiled `setStructureStarts` does — section 3). Hierarchy
+from [src] `ChunkRandom.java`: `public class ChunkRandom extends CheckedRandom` with
+`public ChunkRandom(Random baseRandom) { super(0L); ... }` and
+`public void setCarverSeed(long worldSeed, int chunkX, int chunkZ)`.
+
+### net.minecraft.util.math.random.CheckedRandom (class_5820)
+[yarn] `net/minecraft/util/math/random/CheckedRandom.mapping`:
+
+```
+CLASS net/minecraft/class_5820 net/minecraft/util/math/random/CheckedRandom
+	COMMENT A checked random that fails fast when it detects concurrent usage.
+	METHOD <init> (J)V
+		ARG 1 seed
+```
+
+Used: `new CheckedRandom(0L)` (the vanilla base random of the weighted draw). Hierarchy from
+[src] `CheckedRandom.java`: `public class CheckedRandom implements BaseRandom`.
+
+### net.minecraft.util.math.random.Random (class_5819) / BaseRandom (class_6566)
+[yarn] `net/minecraft/util/math/random/Random.mapping`:
+
+```
+CLASS net/minecraft/class_5819 net/minecraft/util/math/random/Random
+	METHOD method_43048 nextInt (I)I
+		ARG 1 bound
+```
+
+[yarn] `net/minecraft/util/math/random/BaseRandom.mapping` header:
+`CLASS net/minecraft/class_6566 net/minecraft/util/math/random/BaseRandom`.
+
+Used: `Random` as the ChunkRandom constructor parameter type, and `nextInt(int)` → `int`
+called on a `ChunkRandom` (the weighted pick). Resolution path from [src]:
+`public interface BaseRandom extends Random` provides `default int nextInt(int bound)`,
+`CheckedRandom implements BaseRandom`, `ChunkRandom extends CheckedRandom` — so
+`chunkRandom.nextInt(i)` compiles exactly as in the decompiled `setStructureStarts`.
+
 ### com.mojang.datafixers.util.Pair — third-party (DataFixerUpper), unobfuscated
 Not a mapped Minecraft symbol. `getFirst()` / `getSecond()` usage proven by the vanilla
 locate code compiled against the same library — [src] `server/command/LocateCommand.java`:
@@ -532,4 +660,8 @@ caveat that the example branch pins newer tooling.
 - `new Identifier(...)` — constructor privatized; only `Identifier.tryParse` is used.
 - `World#getBiome` — never used anywhere (would load chunks; violates the oracle rule).
 - `StructureAccessor` start queries — never used (force chunk generation; the placement
-  calculator + `createStructureStart` are the chunk-load-free paths).
+  calculator + `createStructureStart` are the chunk-load-free query paths). The one
+  deliberate exception to chunk-freedom is `ChunkGenerator#locateStructure` behind /locate:
+  it may compute structure starts and persist STRUCTURE_STARTS-stage proto-chunks in the
+  throwaway `world-oracle` world — documented as by-design in the API contract's read-only
+  guarantee (see the behavior note in section 2). No oracle path touches any other world.

@@ -30,9 +30,9 @@ import java.util.Map;
  * tile spans 1024x1024 blocks; each zoom-out doubles blocks-per-pixel (1 px = 4*2^z blocks,
  * span 1024*2^z), 0 <= z <= 6. Tile (tx, tz) covers [tx*span, (tx+1)*span) x [tz*span, (tz+1)*span).
  *
- * Disk cache: cacheDir/&lt;fingerprint&gt;/&lt;seed&gt;/tiles/&lt;dim&gt;/&lt;y&gt;/&lt;z&gt;/&lt;tx&gt;/&lt;tz&gt;.png with ':' in
- * path components replaced by '_' (the contract specifies this for the dimension; the same
- * sanitization is applied to the fingerprint because ':' is not legal in Windows paths).
+ * Disk cache: cacheDir/&lt;fingerprint&gt;/&lt;seed&gt;/tiles/&lt;dim&gt;/&lt;y&gt;/&lt;z&gt;/&lt;tx&gt;/&lt;tz&gt;.png where, per
+ * the contract, BOTH the fingerprint and the dimension path components have ':' replaced by
+ * '_' (Windows forbids ':' in path segments).
  */
 public final class TileEndpoint {
     private static final int TILE_SIZE = 256;

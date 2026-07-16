@@ -1,7 +1,10 @@
 package dev.seedmap.oracle.world;
 
 import dev.seedmap.oracle.http.ApiError;
+import net.minecraft.structure.StructureSet;
 import net.minecraft.util.math.ChunkPos;
+import net.minecraft.util.math.random.CheckedRandom;
+import net.minecraft.util.math.random.ChunkRandom;
 import net.minecraft.world.gen.chunk.placement.ConcentricRingsStructurePlacement;
 import net.minecraft.world.gen.chunk.placement.RandomSpreadStructurePlacement;
 import net.minecraft.world.gen.chunk.placement.StructurePlacement;
@@ -9,6 +12,7 @@ import net.minecraft.world.gen.chunk.placement.StructurePlacementCalculator;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Predicate;
 
 /**
  * Candidate start-chunk enumeration for one {@link StructurePlacement} inside a chunk bbox.
@@ -87,5 +91,57 @@ public final class PlacementScan {
 
     public static long chunkArea(int minChunkX, int minChunkZ, int maxChunkX, int maxChunkZ) {
         return (maxChunkX - (long) minChunkX + 1) * (maxChunkZ - (long) minChunkZ + 1);
+    }
+
+    /**
+     * The winner of vanilla's per-start-chunk draw for one structure set — a faithful
+     * transcription of the decompiled {@code ChunkGenerator#setStructureStarts}: a
+     * single-entry set skips the draw entirely; a set with several weighted entries seeds a
+     * {@code ChunkRandom} via {@code setCarverSeed(structureSeed, chunkPos.x, chunkPos.z)}
+     * and runs weighted elimination — pick a weighted random entry, keep it if its start
+     * computes, otherwise remove it from the pool and redraw until the pool is empty.
+     *
+     * @param startComputes the caller's {@code trySetStructureStart} equivalent (a real
+     *                      {@code Structure#createStructureStart} whose result has children)
+     * @return the entry vanilla would place in this start chunk, or {@code null} if none
+     */
+    public static StructureSet.WeightedEntry weightedWinner(
+            StructureSet set,
+            long structureSeed,
+            ChunkPos chunkPos,
+            Predicate<StructureSet.WeightedEntry> startComputes) {
+        List<StructureSet.WeightedEntry> entries = set.structures();
+        if (entries.size() == 1) {
+            // Vanilla bypasses the draw for single-entry sets (list.size() == 1 branch).
+            StructureSet.WeightedEntry only = entries.get(0);
+            return startComputes.test(only) ? only : null;
+        }
+        List<StructureSet.WeightedEntry> pool = new ArrayList<>(entries.size());
+        pool.addAll(entries);
+        ChunkRandom chunkRandom = new ChunkRandom(new CheckedRandom(0L));
+        chunkRandom.setCarverSeed(structureSeed, chunkPos.x, chunkPos.z);
+        int totalWeight = 0;
+        for (StructureSet.WeightedEntry entry : pool) {
+            totalWeight += entry.weight();
+        }
+        while (!pool.isEmpty()) {
+            // Vanilla's weighted pick: walk the pool subtracting weights from one draw.
+            int draw = chunkRandom.nextInt(totalWeight);
+            int picked = 0;
+            for (StructureSet.WeightedEntry entry : pool) {
+                draw -= entry.weight();
+                if (draw < 0) {
+                    break;
+                }
+                picked++;
+            }
+            StructureSet.WeightedEntry candidate = pool.get(picked);
+            if (startComputes.test(candidate)) {
+                return candidate;
+            }
+            pool.remove(picked);
+            totalWeight -= candidate.weight();
+        }
+        return null;
     }
 }

@@ -80,8 +80,12 @@ public final class OracleHttpServer {
             return thread;
         });
 
+        // The contract pins 127.0.0.1 (getLoopbackAddress() could yield ::1 under
+        // -Djava.net.preferIPv6Addresses=true). getByAddress with a literal address never
+        // resolves; its UnknownHostException (an IOException) is declared by this method.
+        InetAddress loopback = InetAddress.getByAddress("127.0.0.1", new byte[]{127, 0, 0, 1});
         HttpServer httpServer = HttpServer.create(
-                new InetSocketAddress(InetAddress.getLoopbackAddress(), config.port()), 0);
+                new InetSocketAddress(loopback, config.port()), 0);
         httpServer.setExecutor(workers);
         OracleHttpServer oracle = new OracleHttpServer(httpServer, workers, server, config, seedString);
         httpServer.createContext("/", oracle::dispatch);
