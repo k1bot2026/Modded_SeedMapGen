@@ -22,8 +22,15 @@ validation harness, verify-seed) codes against THIS document. Change it here fir
   `OPTIONS` preflight answered with `Access-Control-Allow-Methods: GET, POST, OPTIONS`
   and `Access-Control-Allow-Headers: Content-Type`. The oracle binds localhost-only;
   CORS exists so the Vite dev server origin can call it.
-- **Read-only guarantee**: no endpoint may load or generate chunks in any persistent
-  world, or write anything outside the tile cache directory.
+- **Read-only guarantee**: the oracle server runs exclusively against a fresh throwaway
+  world (`level-name=world-oracle`). No endpoint may load or generate chunks in, or write
+  to, any world other than that throwaway world, and the only filesystem writes are the
+  tile cache and the throwaway world itself. Production worlds are never touched (they
+  are never even present in a provisioned run). One endpoint has a disk side effect by
+  design: `/locate` uses the vanilla `locateStructure` code path, which computes
+  structure starts and may persist STRUCTURE_STARTS-stage proto-chunks in the throwaway
+  world — permitted by the spec's guardrail ("no chunk generation or world writes
+  outside the throwaway world").
 - The oracle reads its config from `config/seedmap-oracle.json` in the server dir
   (written by the provisioner before launch):
 
@@ -106,8 +113,10 @@ Rendered biome tile, 256×256 px PNG.
 - Palette: per-biome color derived at runtime — grass color if the biome defines one,
   else foliage color, else water color, else a stable FNV-1a hash of the biome id mapped
   to HSL. Modded biomes need zero configuration.
-- Disk cache: `<cacheDir>/<packFingerprint>/<seed>/tiles/<dim with ':' → '_'>/<y>/<z>/<tx>/<tz>.png`.
-  Serve from cache when present; `Cache-Control: public, max-age=31536000, immutable`
+- Disk cache: `<cacheDir>/<fp>/<seed>/tiles/<d>/<y>/<z>/<tx>/<tz>.png`, where `<fp>` is
+  `packFingerprint` and `<d>` the dimension id, each with `':' → '_'` (Windows forbids
+  `:` in path segments). Serve from cache when present;
+  `Cache-Control: public, max-age=31536000, immutable`
   (a tile for a fixed fingerprint+seed never changes).
 - Content-Type `image/png`.
 
@@ -132,9 +141,17 @@ Candidates that pass verification. `level` defaults to `biome_ok`.
 Verification levels (also returned per feature):
 
 1. `grid` — placement candidate only;
-2. `biome_ok` — candidate whose structure's biome predicate passes at the anchor;
-3. `start_ok` — a real `StructureStart` was computed and is valid (game-accurate,
-   costlier — request only at high zoom / on demand).
+2. `biome_ok` — the structure's biome predicate passes at the anchor for at least one
+   of the sampled quart-Y probes (block Y −48, 0, 64 — covers deep/cave/surface
+   structures such as `minecraft:ancient_city`). This is a fast prefilter: it can
+   over-report (never under-report a structure the game would place); `start_ok` is
+   the game-accurate check;
+3. `start_ok` — a real `StructureStart` was computed and is valid, including the
+   vanilla weighted draw for multi-entry structure sets: where a set has several
+   weighted entries (e.g. `minecraft:villages`), the game places exactly one per start
+   chunk, and only that winner is reported at this level (game-accurate, costlier —
+   request only at high zoom / on demand). At `grid`/`biome_ok` levels all passing
+   entries of a set are listed.
 
 ```json
 {
@@ -157,6 +174,8 @@ Verification levels (also returned per feature):
 
 Nearest structure via `ChunkGenerator#locateStructure` — the same code path as the vanilla
 `/locate structure` command. `structure` accepts a structure id or a `#`-prefixed tag id.
+Side effect (by design, see the read-only guarantee): the vanilla path may generate
+STRUCTURE_STARTS-stage proto-chunks in the throwaway world.
 
 ```json
 { "structure": "minecraft:village_plains", "x": 1424, "z": -368, "distance": 1502.3 }
@@ -226,8 +245,11 @@ Response:
 
 - Biome observations: re-parameterize the multi-noise sampler for the candidate seed
   (no server restart).
-- Structure observations: candidate-seeded placement calculation; `match` = a structure
-  of the expected type is placed in the observation's chunk.
+- Structure observations: candidate-seeded placement calculation; `match` = the game,
+  generating with the candidate seed, would place a structure of the expected type in
+  the observation's chunk — game-accurate: a real `StructureStart` is computed with the
+  candidate-seeded noise/placement, including the vanilla weighted draw for multi-entry
+  structure sets.
 - `type: "bedrock"` observations are v1.5 (throwaway-world generation): respond per-detail
   `{"match": null, "unsupported": true}` and exclude from `matches`/`total`.
 - `verdict`: `"match"` if `matches == total` and `total > 0`, else `"mismatch"`.
