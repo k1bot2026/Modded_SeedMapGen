@@ -1,0 +1,20 @@
+{
+  "name": "modpack-seedmap",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fully correct seed maps for modded Minecraft — biomes and structures answered by the real world generator (the Oracle), never a reimplementation.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=9"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "check": "pnpm -r --workspace-concurrency=1 run check",
+    "lint": "pnpm -r run lint",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r run test",
+    "build": "pnpm -r run build",
+    "check:oracle-mod": "cd oracle-mod && ./gradlew build --no-daemon"
+  }
+}

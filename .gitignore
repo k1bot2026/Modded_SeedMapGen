@@ -1,0 +1,30 @@
+# Generated runs: assembled servers, tile caches, logs — never commit (legal + size)
+runs/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+.pnpm-store/
+
+# Gradle / Java
+.gradle/
+build/
+!**/src/**/build/
+oracle-mod/bin/
+oracle-mod/run/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+.DS_Store
+
+# Env / secrets (CurseForge API key etc.)
+.env
+.env.*
+
+# Test artifacts
+playwright-report/
+test-results/
+coverage/
