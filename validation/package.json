@@ -1,0 +1,40 @@
+{
+  "name": "@seedmap/validation",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Correctness harness for the seedmap oracle: validate locate / self-consistency / vanilla-baseline plus milestone gates m0-m3 (CLAUDE.md section 5).",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "validate": "./dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "fixtures"
+  ],
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsc -p tsconfig.build.json",
+    "check": "pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build",
+    "start": "node ./dist/cli.js"
+  },
+  "dependencies": {
+    "commander": "^14.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.30.0",
+    "@types/node": "^22.15.0",
+    "eslint": "^9.30.0",
+    "typescript": "^5.8.0",
+    "typescript-eslint": "^8.35.0",
+    "vitest": "^3.2.0"
+  }
+}
