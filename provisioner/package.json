@@ -1,0 +1,43 @@
+{
+  "name": "@seedmap/provisioner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "seedmap CLI: modpack ingestion (Modrinth/CurseForge/local) -> headless oracle server assembly -> lifecycle (run, doctor, verify-seed).",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "seedmap": "./dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsc -p tsconfig.build.json",
+    "check": "pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build",
+    "start": "node ./dist/cli.js"
+  },
+  "dependencies": {
+    "commander": "^14.0.0",
+    "yauzl": "^2.10.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.30.0",
+    "@types/node": "^22.15.0",
+    "@types/yauzl": "^2.10.3",
+    "@types/yazl": "^2.4.6",
+    "eslint": "^9.30.0",
+    "typescript": "^5.8.0",
+    "typescript-eslint": "^8.35.0",
+    "vitest": "^3.2.0",
+    "yazl": "^2.5.1"
+  }
+}
