@@ -1,0 +1,5 @@
+{
+  "status": "unpopulated",
+  "seed": "1234",
+  "howToPopulate": "This fixture needs a booted oracle and cannot be generated in a sandbox. On a machine with network access: (1) provision and start a fresh VANILLA 1.21.1 oracle with the standard seed — `seedmap provision vanilla --mc 1.21.1 --out runs/vanilla` then `seedmap run runs/vanilla --seed 1234 --accept-eula`; (2) once `curl http://127.0.0.1:8765/meta` answers, run `validate vanilla-baseline --record` (optionally `--recorded-by you@host`); (3) review and commit the rewritten fixture. The populated schema is documented in validation/README.md and enforced by src/core/fixture.ts: {status:\"populated\", seed, recordedBy, recordedAt, oracle:{mcVersion, oracleModVersion, packFingerprint}, biomes:[{dim,x,y,z,expected}], locates:[{dim,originX,originZ,structure,expected:{x,z}|\"not_found\"}]}. Until then this gate exits with code 2 — honest, never silently green."
+}

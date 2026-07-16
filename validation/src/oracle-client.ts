@@ -537,6 +537,6 @@ export class OracleClient {
 
   private async getJson(path: string): Promise<unknown> {
     const res = await this.request(path);
-    return (await res.json()) as unknown;
+    return await res.json();
   }
 }

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "seedmap-oracle",
+  "version": "${version}",
+  "name": "Seedmap Oracle",
+  "description": "Read-only worldgen oracle: a localhost-only HTTP server answering biome and structure queries straight from the live chunk generator. Never loads or generates chunks in persistent worlds.",
+  "authors": [
+    "Modpack Seedmap"
+  ],
+  "license": "MIT",
+  "environment": "server",
+  "entrypoints": {
+    "server": [
+      "dev.seedmap.oracle.SeedmapOracleMod"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.1",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}

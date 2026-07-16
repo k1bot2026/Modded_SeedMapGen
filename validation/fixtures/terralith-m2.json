@@ -1,0 +1,4 @@
+{
+  "status": "unpopulated",
+  "howToPopulate": "Gate m2 needs a coordinate whose /biome answer is a terralith: biome for the pinned Cobbleverse pack + seed. On a machine with a running Cobbleverse oracle, run `validate gate m2 --record`: it scans /biomes/grid around the origin for the first terralith: biome, confirms it via /biome, and rewrites this file as {status:\"populated\", dim, x, y, z, expectedBiome, recordedBy, recordedAt, oracle:{packVersion, packFingerprint}}. Commit the result."
+}
