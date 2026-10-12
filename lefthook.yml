@@ -1,0 +1,7 @@
+# Git-hooks voor projecten in de pipeline, geïnstalleerd vanuit de control-plane.
+# commitlint dwingt Conventional Commits af; --no-verify wordt voor agents
+# geblokkeerd door hooks/guard-bash.sh van de control-plane.
+commit-msg:
+  commands:
+    commitlint:
+      run: npx --no -- commitlint --edit {1}

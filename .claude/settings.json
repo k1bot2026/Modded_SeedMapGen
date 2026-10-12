@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "includeCoAuthoredBy": false,
+  "attribution": false,
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "filesystem": {
+      "denyRead": [
+        "/Volumes/AI-Workspace/board",
+        "~/.aws",
+        "~/.bash_history",
+        "~/.config/gh",
+        "~/.docker",
+        "~/.gnupg",
+        "~/.kube",
+        "~/.netrc",
+        "~/.npmrc",
+        "~/.pypirc",
+        "~/.ssh",
+        "~/.zsh_history",
+        "~/Library",
+        "~/.claude.json",
+        "/Volumes/AI-Workspace/wt",
+        "/Volumes/AI-Workspace/state",
+        "/Volumes/AI-Workspace/logs"
+      ],
+      "allowRead": [
+        "."
+      ]
+    }
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(jq *)",
+      "Bash(shellcheck *)"
+    ],
+    "deny": [
+      "Read(~/.ssh/**)",
+      "Read(~/.config/gh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/Library/**)",
+      "Read(**/.env*)",
+      "Bash(*~/.ssh/*)",
+      "Bash(*~/.config/gh/*)",
+      "Bash(*~/.aws/*)",
+      "Bash(*~/Library/*)",
+      "Read(//Volumes/AI-Workspace/board/**)",
+      "Bash(*/.env*)",
+      "Bash(* .env*)",
+      "Bash(.env*)",
+      "WebFetch",
+      "WebSearch",
+      "Read(~/.claude.json)"
+    ],
+    "disableBypassPermissionsMode": "disable"
+  },
+  "enableAllProjectMcpServers": false,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Volumes/AI-Workspace/control-plane/hooks/guard-bash.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "^mcp__",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Volumes/AI-Workspace/control-plane/hooks/guard-board.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^mcp__kaneo__create_task$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Volumes/AI-Workspace/control-plane/hooks/tag-proposal.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Volumes/AI-Workspace/control-plane/hooks/stop-gate.sh",
+            "timeout": 1800
+          }
+        ]
+      }
+    ]
+  }
+}
