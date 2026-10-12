@@ -10,6 +10,13 @@ cd "$(git rev-parse --show-toplevel)" || exit 1
 BASE="${VERIFY_BASE:-main}"
 failed=()
 
+# pnpm als het project een pnpm-lock.yaml heeft, anders npm.
+if [ -f pnpm-lock.yaml ]; then
+  PM=pnpm
+else
+  PM=npm
+fi
+
 # Zonder basis vallen alle git-stappen stil open; dan faalt verify meteen.
 if ! git rev-parse --verify -q "$BASE^{commit}" >/dev/null; then
   echo "FAIL  basis $BASE niet gevonden"
@@ -80,8 +87,41 @@ commits_conventional() {
   local subject
   while IFS= read -r subject; do
     [ -n "$subject" ] || continue
-    printf '%s\n' "$subject" | npx --no -- commitlint || return 1
+    printf '%s\n' "$subject" | run_bin commitlint || return 1
   done < <(git log "$BASE..HEAD" --format=%s)
+}
+
+# run_bin <programma> [args]: een programma uit de dependencies van het project
+run_bin() {
+  if [ "$PM" = pnpm ]; then
+    pnpm exec "$@"
+  else
+    npx --no -- "$@"
+  fi
+}
+
+install_dependencies() {
+  if [ "$PM" = pnpm ]; then
+    pnpm install --frozen-lockfile
+  else
+    npm ci
+  fi
+}
+
+tests_with_coverage() {
+  if [ "$PM" = pnpm ]; then
+    pnpm test --coverage
+  else
+    npm test -- --coverage
+  fi
+}
+
+audit_dependencies() {
+  if [ "$PM" = pnpm ]; then
+    pnpm audit --audit-level high
+  else
+    npm audit --audit-level=high
+  fi
 }
 
 no_coauthors() { [ "$(git log "$BASE..HEAD" --format=%B | grep -ci 'co-authored-by')" -eq 0 ]; }
@@ -93,13 +133,14 @@ step "geen toegevoegde onderdrukkingen" no_added_suppressions
 step "pipeline-bestanden ongewijzigd" pipeline_files_unchanged
 step "npm-scripts ongewijzigd" npm_scripts_unchanged
 step "linter- en testconfiguratie ongewijzigd" config_unchanged
+step "dependencies installeren ($PM)" install_dependencies
 step "gitleaks" no_secrets
 step "commitlint" commits_conventional
 step "geen co-authored-by" no_coauthors
-step "npm run lint" npm run lint
-step "npm run typecheck" npm run typecheck
-step "npm test met coverage" npm test -- --coverage
-step "npm audit" npm audit --audit-level=high
+step "$PM run lint" "$PM" run lint
+step "$PM run typecheck" "$PM" run typecheck
+step "$PM test met coverage" tests_with_coverage
+step "$PM audit" audit_dependencies
 
 echo
 if [ "${#failed[@]}" -eq 0 ]; then
