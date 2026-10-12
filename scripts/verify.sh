@@ -10,17 +10,18 @@ cd "$(git rev-parse --show-toplevel)" || exit 1
 BASE="${VERIFY_BASE:-main}"
 failed=()
 
-# pnpm als het project een pnpm-lock.yaml heeft, anders npm.
-if [ -f pnpm-lock.yaml ]; then
-  PM=pnpm
-else
-  PM=npm
-fi
-
 # Zonder basis vallen alle git-stappen stil open; dan faalt verify meteen.
 if ! git rev-parse --verify -q "$BASE^{commit}" >/dev/null; then
   echo "FAIL  basis $BASE niet gevonden"
   exit 1
+fi
+
+# pnpm als de basis een pnpm-lock.yaml heeft, anders npm. De basis, niet de worktree: anders
+# kiest een kaart zelf welk gereedschap verify gebruikt.
+if git cat-file -e "$BASE:pnpm-lock.yaml" 2>/dev/null; then
+  PM=pnpm
+else
+  PM=npm
 fi
 
 step() {
@@ -72,13 +73,15 @@ has_config_change_label() {
 config_unchanged() {
   has_config_change_label && return 0
   ! "${DIFF[@]}" --name-only "$BASE...HEAD" \
-    | grep -E '(^|/)(pyproject\.toml|\.?ruff\.toml|pytest\.ini|setup\.cfg|tox\.ini|conftest\.py|\.coveragerc|mypy\.ini|pyrightconfig\.json|tsconfig[^/]*\.json|\.eslintrc[^/]*|\.eslintignore|eslint\.config\.[^/]*|jest\.config\.[^/]*|vitest\.config\.[^/]*|build\.gradle[^/]*|settings\.gradle[^/]*|gradlew(\.bat)?)$|^gradle/wrapper/'
+    | grep -E '(^|/)(pyproject\.toml|\.?ruff\.toml|pytest\.ini|setup\.cfg|tox\.ini|conftest\.py|\.coveragerc|mypy\.ini|pyrightconfig\.json|tsconfig[^/]*\.json|\.eslintrc[^/]*|\.eslintignore|eslint\.config\.[^/]*|jest\.config\.[^/]*|vitest\.config\.[^/]*|build\.gradle[^/]*|settings\.gradle[^/]*|gradlew(\.bat)?|\.npmrc|\.pnpmfile\.cjs|pnpm-workspace\.yaml|\.yarnrc[^/]*)$|^gradle/wrapper/'
 }
 
-# De scripts in package.json bepalen wat lint, typecheck en test doen.
+# De scripts en de pnpm-, overrides- en resolutions-velden in package.json bepalen wat lint,
+# typecheck, test en audit doen en welke pakketten er komen.
 npm_scripts_unchanged() {
   has_config_change_label && return 0
-  [ "$(git show "$BASE:package.json" 2>/dev/null | jq -S '.scripts // {}')" = "$(jq -S '.scripts // {}' package.json)" ]
+  local filter='{scripts, pnpm, overrides, resolutions}'
+  [ "$(git show "$BASE:package.json" 2>/dev/null | jq -S "$filter")" = "$(jq -S "$filter" package.json)" ]
 }
 
 no_secrets() { gitleaks detect --no-git --source . --redact; }
@@ -100,11 +103,12 @@ run_bin() {
   fi
 }
 
+# Zonder install-scripts: code van dependencies mag niet draaien voordat lint en tests dat doen.
 install_dependencies() {
   if [ "$PM" = pnpm ]; then
-    pnpm install --frozen-lockfile
+    pnpm install --frozen-lockfile --ignore-scripts
   else
-    npm ci
+    npm ci --ignore-scripts
   fi
 }
 
@@ -131,7 +135,7 @@ step "geen verwijderde testbestanden" no_deleted_tests
 step "geen toegevoegde skips" no_added_skips
 step "geen toegevoegde onderdrukkingen" no_added_suppressions
 step "pipeline-bestanden ongewijzigd" pipeline_files_unchanged
-step "npm-scripts ongewijzigd" npm_scripts_unchanged
+step "package.json-scripts en -pakketbeleid ongewijzigd" npm_scripts_unchanged
 step "linter- en testconfiguratie ongewijzigd" config_unchanged
 step "dependencies installeren ($PM)" install_dependencies
 step "gitleaks" no_secrets
